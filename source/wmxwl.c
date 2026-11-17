@@ -1,5 +1,6 @@
 /* wmxwl — floating Wayland compositor in the style of wmx.
- * Derived from tohu (ISC, uint). See COPYING. No wmx source is included.
+ * Derived from tohu (ISC, uint). See COPYING. The frame texture is from
+ * wmx's background.xpm (MIT). No other wmx source is included.
  */
 
 #include <signal.h>
@@ -25,6 +26,9 @@ static void sync_visibility(void);
 static void go_channel(uint32_t n);
 static void remember_geometry(struct client *c);
 static void stack_by(struct swc_window *win, int32_t direction);
+static void restack(struct client *c, int32_t direction);
+static void set_max(struct client *c, uint8_t mask, bool on);
+static void on_axis(void *data, uint32_t time, uint32_t axis, int32_t value120);
 static void on_screen_destroy(void *data);
 static void on_screen_entered(void *data);
 static void on_win_destroy(void *data);
@@ -51,13 +55,26 @@ static const struct swc_screen_handler screen_handler = {
 	.entered = on_screen_entered,
 };
 
-/* neuswc paints a solid decor over the inner border, so the frame and
- * label colours are the cue that a window has the pointer. The border
- * is still set, for a neuswc that draws it above the decor. */
+/* Unfocused: the left tab only, as in wmx. Focused: tab plus the frame.
+ * The black outline is part of the pixmap, because neuswc paints decor
+ * over swc_window_set_border. */
+static const char *tab_title(struct swc_window *win)
+{
+	const char *s;
+
+	if (!win)
+		return NULL;
+	s = win->title;
+	if (!s || !s[0])
+		s = win->app_id;
+	if (!s || !s[0])
+		return NULL;
+	return s;
+}
+
 static void apply_decor(struct client *c, bool active)
 {
 	struct swc_decor decor;
-	const char *title;
 
 	if (!c || !c->win)
 		return;
@@ -69,18 +86,14 @@ static void apply_decor(struct client *c, bool active)
 	}
 
 	decor = cfg.decor;
-	decor.color = active ? cfg.frame_active : cfg.frame_normal;
-	decor.title.color = active ? cfg.title_active : cfg.title_normal;
-	title = c->win->title;
-	if (!title || !title[0])
-		title = c->win->app_id;
-	if (title && title[0])
-		decor.title.string = title;
-
+	if (!active) {
+		decor.top = 0;
+		decor.right = 0;
+		decor.bottom = 0;
+	}
+	decor.title.color = cfg.title_active;
+	decor.title.string = tab_title(c->win);
 	swc_window_set_decor(c->win, &decor);
-	swc_window_set_border(c->win,
-	                      active ? cfg.border_active : cfg.border_normal,
-	                      cfg.border_width, 0, 0);
 }
 
 static void focus(struct client *c)
@@ -186,7 +199,7 @@ static void remember_geometry(struct client *c)
 {
 	struct swc_rectangle geom;
 
-	if (!c || c->maximised || !c->win)
+	if (!c || c->max || !c->win)
 		return;
 	if (!swc_window_get_geometry(c->win, &geom))
 		return;
@@ -208,9 +221,31 @@ static void stack_by(struct swc_window *win, int32_t direction)
 		swc_window_stack(win, direction);
 }
 
-static uint32_t outward(uint32_t decor, uint32_t border)
+static void restack(struct client *c, int32_t direction)
 {
-	return decor > border ? decor : border;
+	if (!c)
+		return;
+	stack_by(c->win, direction);
+	wl_list_remove(&c->link);
+	if (direction < 0)
+		wl_list_insert(&wm.clients, &c->link);
+	else
+		wl_list_insert(wm.clients.prev, &c->link);
+}
+
+static void decor_size(const struct client *c,
+                       uint32_t *l, uint32_t *t, uint32_t *r, uint32_t *b)
+{
+	*l = cfg.decor.left;
+	if (c == wm.sel_client) {
+		*t = cfg.decor.top;
+		*r = cfg.decor.right;
+		*b = cfg.decor.bottom;
+	} else {
+		*t = 0;
+		*r = 0;
+		*b = 0;
+	}
 }
 
 static void on_screen_destroy(void *data)
@@ -296,6 +331,10 @@ static void setup_binds(void)
 		                    (void *)&b->arg) < 0)
 			_log(stderr, "failed to add a binding");
 	}
+
+	if (swc_add_axis_binding(0, WL_POINTER_AXIS_VERTICAL_SCROLL, on_axis,
+	                         NULL) < 0)
+		_log(stderr, "failed to add the wheel binding");
 }
 
 static void setup(void)
@@ -372,7 +411,7 @@ void raise_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
 	(void)value;
 	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client)
 		return;
-	stack_by(wm.sel_client->win, -1);
+	restack(wm.sel_client, -1);
 }
 
 void lower_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -382,7 +421,7 @@ void lower_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
 	(void)value;
 	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client)
 		return;
-	stack_by(wm.sel_client->win, +1);
+	restack(wm.sel_client, +1);
 }
 
 void hide_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -437,12 +476,82 @@ void kill_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
 	swc_window_close(wm.sel_client->win);
 }
 
+static bool client_screen(struct client *c, struct swc_screen **out)
+{
+	if (c->scr && c->scr->scr) {
+		*out = c->scr->scr;
+		return true;
+	}
+	if (wm.sel_screen && wm.sel_screen->scr) {
+		*out = wm.sel_screen->scr;
+		return true;
+	}
+	return false;
+}
+
+static void set_max(struct client *c, uint8_t mask, bool on)
+{
+	struct swc_screen *scr;
+	struct swc_rectangle geom;
+	struct swc_rectangle cur;
+	uint32_t left, right, top, bottom;
+
+	if (!c || !c->win || c->fullscreen || !mask)
+		return;
+
+	if (!on) {
+		if (!(c->max & mask))
+			return;
+		if (!swc_window_get_geometry(c->win, &cur))
+			return;
+		geom = cur;
+		if ((mask & MAX_W) && c->w > 0) {
+			geom.x = c->x;
+			geom.width = c->w;
+		}
+		if ((mask & MAX_H) && c->h > 0) {
+			geom.y = c->y;
+			geom.height = c->h;
+		}
+		c->max &= (uint8_t)~mask;
+		swc_window_set_geometry(c->win, &geom);
+		if (!c->max)
+			remember_geometry(c);
+		return;
+	}
+
+	if ((c->max & mask) == mask)
+		return;
+	if (!client_screen(c, &scr))
+		return;
+	if (!c->max)
+		remember_geometry(c);
+	if (!swc_window_get_geometry(c->win, &cur))
+		return;
+
+	left = cfg.decor.left;
+	right = cfg.decor.right;
+	top = cfg.decor.top;
+	bottom = cfg.decor.bottom;
+	geom = scr->usable_geometry;
+	if (geom.width <= left + right || geom.height <= top + bottom)
+		return;
+
+	if (mask & MAX_W) {
+		cur.x = geom.x + (int32_t)left;
+		cur.width = geom.width - left - right;
+	}
+	if (mask & MAX_H) {
+		cur.y = geom.y + (int32_t)top;
+		cur.height = geom.height - top - bottom;
+	}
+	c->max |= mask;
+	swc_window_set_geometry(c->win, &cur);
+}
+
 void toggle_maximise(void *data, uint32_t time, uint32_t value, uint32_t state)
 {
 	struct client *c;
-	struct swc_screen *scr;
-	struct swc_rectangle geom;
-	uint32_t left, right, top, bottom;
 
 	(void)data;
 	(void)time;
@@ -451,45 +560,26 @@ void toggle_maximise(void *data, uint32_t time, uint32_t value, uint32_t state)
 		return;
 
 	c = wm.sel_client;
-	if (c->fullscreen || !c->win)
+	if ((c->max & (MAX_W | MAX_H)) == (MAX_W | MAX_H))
+		set_max(c, MAX_W | MAX_H, false);
+	else
+		set_max(c, MAX_W | MAX_H, true);
+}
+
+void set_span(void *data, uint32_t time, uint32_t value, uint32_t state)
+{
+	union arg *a = data;
+	uint8_t bits;
+	uint8_t mask;
+
+	(void)time;
+	(void)value;
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client || !a)
 		return;
 
-	if (c->maximised) {
-		c->maximised = false;
-		if (c->w > 0 && c->h > 0) {
-			geom.x = c->x;
-			geom.y = c->y;
-			geom.width = c->w;
-			geom.height = c->h;
-			swc_window_set_geometry(c->win, &geom);
-		}
-		return;
-	}
-
-	scr = NULL;
-	if (c->scr)
-		scr = c->scr->scr;
-	else if (wm.sel_screen)
-		scr = wm.sel_screen->scr;
-	if (!scr)
-		return;
-
-	remember_geometry(c);
-
-	left = outward(cfg.decor.left, cfg.border_width);
-	right = outward(cfg.decor.right, cfg.border_width);
-	top = outward(cfg.decor.top, cfg.border_width);
-	bottom = outward(cfg.decor.bottom, cfg.border_width);
-	geom = scr->usable_geometry;
-	if (geom.width <= left + right || geom.height <= top + bottom)
-		return;
-
-	geom.x += (int32_t)left;
-	geom.y += (int32_t)top;
-	geom.width -= left + right;
-	geom.height -= top + bottom;
-	c->maximised = true;
-	swc_window_set_geometry(c->win, &geom);
+	bits = (uint8_t)a->ui;
+	mask = bits & (MAX_W | MAX_H);
+	set_max(wm.sel_client, mask, bits & MAX_ON);
 }
 
 void toggle_sticky(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -521,6 +611,7 @@ void mouse_move(void *data, uint32_t time, uint32_t value, uint32_t state)
 	if (!wm.grab.active || wm.grab.resize || !wm.grab.c)
 		return;
 	swc_window_end_move(wm.grab.c->win);
+	wm.grab.c->max = 0;
 	remember_geometry(wm.grab.c);
 	wm.grab.active = false;
 	wm.grab.c = NULL;
@@ -546,10 +637,185 @@ void mouse_resize(void *data, uint32_t time, uint32_t value, uint32_t state)
 	if (!wm.grab.active || !wm.grab.resize || !wm.grab.c)
 		return;
 	swc_window_end_resize(wm.grab.c->win);
+	wm.grab.c->max = 0;
 	remember_geometry(wm.grab.c);
 	wm.grab.active = false;
 	wm.grab.resize = false;
 	wm.grab.c = NULL;
+}
+
+enum {
+	HIT_NONE = 0,
+	HIT_CLIENT,
+	HIT_FRAME,
+	HIT_CORNER,
+};
+
+struct hit {
+	struct client *c;
+	int where;
+};
+
+static struct hit hit_test(int32_t x, int32_t y)
+{
+	struct client *c;
+	struct hit hit = { NULL, HIT_NONE };
+
+	wl_list_for_each(c, &wm.clients, link) {
+		struct swc_rectangle g;
+		uint32_t L, T, R, B;
+		int32_t ox, oy;
+		uint32_t ow, oh;
+
+		if (!shown(c, NULL) || !c->win)
+			continue;
+		if (!swc_window_get_geometry(c->win, &g))
+			continue;
+
+		decor_size(c, &L, &T, &R, &B);
+		ox = g.x - (int32_t)L;
+		oy = g.y - (int32_t)T;
+		ow = g.width + L + R;
+		oh = g.height + T + B;
+		if (x < ox || y < oy ||
+		    x >= ox + (int32_t)ow || y >= oy + (int32_t)oh)
+			continue;
+
+		hit.c = c;
+		if (x >= g.x && y >= g.y &&
+		    x < g.x + (int32_t)g.width &&
+		    y < g.y + (int32_t)g.height)
+			hit.where = HIT_CLIENT;
+		else if (R && B &&
+		         x >= ox + (int32_t)ow - WMX_CORNER &&
+		         y >= oy + (int32_t)oh - WMX_CORNER)
+			hit.where = HIT_CORNER;
+		else
+			hit.where = HIT_FRAME;
+		return hit;
+	}
+	return hit;
+}
+
+static bool pointer_xy(int32_t *x, int32_t *y)
+{
+	if (!swc_cursor_position(x, y))
+		return false;
+	*x /= 256;
+	*y /= 256;
+	return true;
+}
+
+static bool pass_click;
+static int wheel_acc;
+
+static void circulate(void)
+{
+	struct client *n;
+
+	n = cycle(wm.sel_client, +1);
+	if (!n)
+		n = first_shown(NULL);
+	focus(n);
+}
+
+void frame_button(void *data, uint32_t time, uint32_t value, uint32_t state)
+{
+	int32_t x, y;
+	struct hit hit;
+
+	(void)data;
+
+	if (state != WL_POINTER_BUTTON_STATE_PRESSED) {
+		if (wm.grab.active && wm.grab.c) {
+			if (wm.grab.resize)
+				swc_window_end_resize(wm.grab.c->win);
+			else
+				swc_window_end_move(wm.grab.c->win);
+			wm.grab.c->max = 0;
+			remember_geometry(wm.grab.c);
+			wm.grab.active = false;
+			wm.grab.resize = false;
+			wm.grab.c = NULL;
+			return;
+		}
+		if (pass_click)
+			swc_pointer_send_button(time, value, state);
+		pass_click = false;
+		return;
+	}
+
+	pass_click = false;
+	if (!pointer_xy(&x, &y))
+		goto pass;
+	hit = hit_test(x, y);
+
+	if (value == BTN_LEFT &&
+	    (hit.where == HIT_FRAME || hit.where == HIT_CORNER)) {
+		focus(hit.c);
+		wm.grab.active = true;
+		wm.grab.resize = hit.where == HIT_CORNER;
+		wm.grab.c = hit.c;
+		if (wm.grab.resize)
+			swc_window_begin_resize(hit.c->win,
+			                        SWC_WINDOW_EDGE_RIGHT |
+			                        SWC_WINDOW_EDGE_BOTTOM);
+		else
+			swc_window_begin_move(hit.c->win);
+		return;
+	}
+
+	if (value == BTN_RIGHT && hit.where != HIT_CLIENT) {
+		circulate();
+		return;
+	}
+
+	if (value == BTN_MIDDLE &&
+	    (hit.where == HIT_FRAME || hit.where == HIT_CORNER)) {
+		go_channel(wm.ws >= NCHANNELS ? 1 : (uint32_t)wm.ws + 1);
+		return;
+	}
+
+	if (value == BTN_MIDDLE && hit.where == HIT_NONE) {
+		union arg a;
+
+		a.v = menucmd;
+		spawn(&a, time, value, WL_KEYBOARD_KEY_STATE_PRESSED);
+		return;
+	}
+
+pass:
+	pass_click = true;
+	swc_pointer_send_button(time, value, state);
+}
+
+static void on_axis(void *data, uint32_t time, uint32_t axis, int32_t value120)
+{
+	int32_t x, y;
+	struct hit hit;
+
+	(void)data;
+	if (axis != WL_POINTER_AXIS_VERTICAL_SCROLL || !value120 ||
+	    !pointer_xy(&x, &y)) {
+		swc_pointer_send_axis(time, axis, value120);
+		return;
+	}
+
+	hit = hit_test(x, y);
+	if (hit.where != HIT_FRAME && hit.where != HIT_CORNER) {
+		swc_pointer_send_axis(time, axis, value120);
+		return;
+	}
+
+	wheel_acc += value120;
+	while (wheel_acc >= 120) {
+		wheel_acc -= 120;
+		go_channel(wm.ws <= 1 ? NCHANNELS : (uint32_t)wm.ws - 1);
+	}
+	while (wheel_acc <= -120) {
+		wheel_acc += 120;
+		go_channel(wm.ws >= NCHANNELS ? 1 : (uint32_t)wm.ws + 1);
+	}
 }
 
 static struct screen *screen_at(int32_t x, int32_t y)
@@ -606,7 +872,7 @@ void new_window(struct swc_window *win)
 	c->hidden = false;
 	c->sticky = false;
 	c->fullscreen = false;
-	c->maximised = false;
+	c->max = 0;
 	c->x = 0;
 	c->y = 0;
 	c->w = 0;

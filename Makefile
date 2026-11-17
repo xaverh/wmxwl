@@ -20,7 +20,7 @@ all: wmxwl
 wmxwl: $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LIBS)
 
-source/wmxwl.o: source/wmxwl.c source/config.h source/include/wmxwl.h source/include/types.h source/include/util.h
+source/wmxwl.o: source/wmxwl.c source/config.h source/frame.h source/include/wmxwl.h source/include/types.h source/include/util.h
 	$(CC) $(CFLAGS) -c -o $@ source/wmxwl.c
 
 source/util.o: source/util.c source/include/util.h source/include/wmxwl.h source/include/types.h

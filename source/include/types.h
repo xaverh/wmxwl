@@ -41,7 +41,7 @@ struct client {
 	bool hidden;
 	bool sticky;
 	bool fullscreen;
-	bool maximised;
+	uint8_t max; /* MAX_W and MAX_H, in wmxwl.c */
 	int32_t x, y;
 	uint32_t w, h;
 	uint32_t ws;

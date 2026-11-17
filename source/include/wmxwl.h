@@ -5,6 +5,13 @@
 
 #include "types.h"
 
+/* set_span: MAX_W / MAX_H choose the axis, MAX_ON fills it. */
+enum {
+	MAX_W = 1,
+	MAX_H = 2,
+	MAX_ON = 4,
+};
+
 void focus_next(void *data, uint32_t time, uint32_t value, uint32_t state);
 void focus_prev(void *data, uint32_t time, uint32_t value, uint32_t state);
 void raise_sel(void *data, uint32_t time, uint32_t value, uint32_t state);
@@ -13,9 +20,11 @@ void hide_sel(void *data, uint32_t time, uint32_t value, uint32_t state);
 void unhide_last(void *data, uint32_t time, uint32_t value, uint32_t state);
 void kill_sel(void *data, uint32_t time, uint32_t value, uint32_t state);
 void toggle_maximise(void *data, uint32_t time, uint32_t value, uint32_t state);
+void set_span(void *data, uint32_t time, uint32_t value, uint32_t state);
 void toggle_sticky(void *data, uint32_t time, uint32_t value, uint32_t state);
 void mouse_move(void *data, uint32_t time, uint32_t value, uint32_t state);
 void mouse_resize(void *data, uint32_t time, uint32_t value, uint32_t state);
+void frame_button(void *data, uint32_t time, uint32_t value, uint32_t state);
 void new_screen(struct swc_screen *scr);
 void new_window(struct swc_window *win);
 void new_device(struct libinput_device *dev);
