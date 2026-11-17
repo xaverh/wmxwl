@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=wmxwl
+Comment=Wayland session in the style of wmx
+Exec=swc-launch wmxwl
+Type=Application
+DesktopNames=wmxwl
