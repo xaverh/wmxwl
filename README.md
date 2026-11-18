@@ -13,6 +13,12 @@ rather than wmx's short tab with a diagonal cut, and the title is stacked
 glyphs rather than letters rotated by Xft. The typeface is Bitstream Vera
 Sans, 12px, demibold, black.
 
+![wmx frame](sample-wmx.png)
+
+Sample of that frame, on the black root neuswc paints. The two upper windows
+are unfocused, so only the tab is drawn. The lower one is focused. The titles
+are stacked. DejaVu Sans Bold stands in for Bitstream Vera Sans here.
+
 The other frame is the IRIX 4Dwm title bar (Indigo Magic). It is 32px on top
 and 8px on the other sides, with the menu button, the minimize square and the
 maximize square. A focused window is beige. An unfocused window is gray. The
