@@ -5,11 +5,14 @@
 
 #include "types.h"
 #include "frame.h"
+#include "irix.h"
 #include "wmxwl.h"
 
-/* Unfocused windows show only the left tab. Focus adds the other edges.
- * Both use the wmx frame texture. neuswc stacks the title; it cannot
- * rotate it the way Xft does. */
+/* THEME_DEFAULT is the frame at startup. Super+t switches.
+ * THEME_WMX: unfocused windows show only the left tab; focus adds the
+ * other edges. Both use the wmx texture. neuswc stacks the title.
+ * THEME_IRIX: the 4Dwm frame from irix.h, on every window. */
+#define THEME_DEFAULT THEME_WMX
 static const struct config cfg = {
 	.motion_throttle_hz = 85,
 	.border_active = 0xff000000,
@@ -73,6 +76,7 @@ static struct bind binds[] = {
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_KP_Add,  { .ui = MAX_W | MAX_ON }, set_span },
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_KP_Subtract, { .ui = MAX_W },    set_span },
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_Pause,   { .v = NULL },    toggle_sticky },
+	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_t,       { .v = NULL },    toggle_theme },
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_Left,    { .v = NULL },    channel_prev },
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_Right,   { .v = NULL },    channel_next },
 	{ SWC_BINDING_KEY,    MOD4,        XKB_KEY_1,       { .ui = 1 },      channel_goto },

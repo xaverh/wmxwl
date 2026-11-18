@@ -42,3 +42,7 @@ itself a reference compositor for neuswc (https://git.sr.ht/~shrub900/neuswc),
 a fork of swc by Michael Forney. The window-management behaviour is modelled
 on wmx. No wmx C++ source is included; the frame texture above is the
 exception.
+
+source/irix.h recreates the IRIX 4Dwm (Indigo Magic) window frame. The
+pixels were measured from a screenshot of that frame. It is not SGI
+source, and no 4Dwm source is included.

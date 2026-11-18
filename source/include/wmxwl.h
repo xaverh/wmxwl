@@ -22,6 +22,7 @@ void kill_sel(void *data, uint32_t time, uint32_t value, uint32_t state);
 void toggle_maximise(void *data, uint32_t time, uint32_t value, uint32_t state);
 void set_span(void *data, uint32_t time, uint32_t value, uint32_t state);
 void toggle_sticky(void *data, uint32_t time, uint32_t value, uint32_t state);
+void toggle_theme(void *data, uint32_t time, uint32_t value, uint32_t state);
 void mouse_move(void *data, uint32_t time, uint32_t value, uint32_t state);
 void mouse_resize(void *data, uint32_t time, uint32_t value, uint32_t state);
 void frame_button(void *data, uint32_t time, uint32_t value, uint32_t state);

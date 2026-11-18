@@ -1,6 +1,7 @@
 /* wmxwl — floating Wayland compositor in the style of wmx.
- * Derived from tohu (ISC, uint). See COPYING. The frame texture is from
- * wmx's background.xpm (MIT). No other wmx source is included.
+ * Derived from tohu (ISC, uint). See COPYING. The wmx frame texture is
+ * from background.xpm (MIT). The IRIX frame in irix.h is measured from
+ * a 4Dwm screenshot. No other wmx or SGI source is included.
  */
 
 #include <signal.h>
@@ -16,6 +17,8 @@ enum { NCHANNELS = 9, STACK_STEPS = 256 };
 
 struct wm wm;
 
+static int theme = THEME_DEFAULT;
+
 static void focus(struct client *c);
 static void apply_decor(struct client *c, bool active);
 static bool shown(const struct client *c, const struct screen *s);
@@ -28,6 +31,8 @@ static void remember_geometry(struct client *c);
 static void stack_by(struct swc_window *win, int32_t direction);
 static void restack(struct client *c, int32_t direction);
 static void set_max(struct client *c, uint8_t mask, bool on);
+static void layout_max(struct client *c);
+static void hide_client(struct client *c);
 static void on_axis(void *data, uint32_t time, uint32_t axis, int32_t value120);
 static void on_screen_destroy(void *data);
 static void on_screen_entered(void *data);
@@ -55,9 +60,9 @@ static const struct swc_screen_handler screen_handler = {
 	.entered = on_screen_entered,
 };
 
-/* Unfocused: the left tab only, as in wmx. Focused: tab plus the frame.
- * The black outline is part of the pixmap, because neuswc paints decor
- * over swc_window_set_border. */
+/* wmx, unfocused: the left tab only. Focused: tab plus the frame.
+ * IRIX: the full 4Dwm frame either way. The black outline is part of
+ * the parts, because neuswc paints decor over swc_window_set_border. */
 static const char *tab_title(struct swc_window *win)
 {
 	const char *s;
@@ -82,6 +87,30 @@ static void apply_decor(struct client *c, bool active)
 	if (c->fullscreen) {
 		swc_window_set_decor(c->win, NULL);
 		swc_window_set_border(c->win, 0, 0, 0, 0);
+		return;
+	}
+
+	if (theme == THEME_IRIX) {
+		decor = (struct swc_decor){
+			.color = active ? IRIX_FACE_ACTIVE : IRIX_FACE_IDLE,
+			.top = IRIX_TOP,
+			.right = IRIX_EDGE,
+			.bottom = IRIX_EDGE,
+			.left = IRIX_EDGE,
+			.parts = active ? &irix_active_parts : &irix_idle_parts,
+			.title = {
+				.enabled = true,
+				.edge = SWC_DECOR_EDGE_TOP,
+				.align = SWC_DECOR_ALIGN_START,
+				.color = 0xff000000,
+				.padding = IRIX_TITLE_PAD,
+				.offset_x = IRIX_TITLE_OFFX,
+				.offset_y = IRIX_TITLE_OFFY,
+				.font = IRIX_FONT,
+			},
+		};
+		decor.title.string = tab_title(c->win);
+		swc_window_set_decor(c->win, &decor);
 		return;
 	}
 
@@ -233,9 +262,37 @@ static void restack(struct client *c, int32_t direction)
 		wl_list_insert(wm.clients.prev, &c->link);
 }
 
+/* Focused frame, or the IRIX frame. wmx leaves the other three edges
+ * off until the window is focused; that case is decor_size. */
+static void theme_insets(uint32_t *l, uint32_t *t, uint32_t *r, uint32_t *b)
+{
+	if (theme == THEME_IRIX) {
+		*l = IRIX_EDGE;
+		*r = IRIX_EDGE;
+		*b = IRIX_EDGE;
+		*t = IRIX_TOP;
+		return;
+	}
+	*l = cfg.decor.left;
+	*t = cfg.decor.top;
+	*r = cfg.decor.right;
+	*b = cfg.decor.bottom;
+}
+
 static void decor_size(const struct client *c,
                        uint32_t *l, uint32_t *t, uint32_t *r, uint32_t *b)
 {
+	if (!c || c->fullscreen) {
+		*l = 0;
+		*t = 0;
+		*r = 0;
+		*b = 0;
+		return;
+	}
+	if (theme == THEME_IRIX) {
+		theme_insets(l, t, r, b);
+		return;
+	}
 	*l = cfg.decor.left;
 	if (c == wm.sel_client) {
 		*t = cfg.decor.top;
@@ -424,23 +481,26 @@ void lower_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
 	restack(wm.sel_client, +1);
 }
 
-void hide_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
+static void hide_client(struct client *c)
 {
-	struct client *c;
-
-	(void)data;
-	(void)time;
-	(void)value;
-	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client)
+	if (!c || c->hidden || !c->win)
 		return;
-
-	c = wm.sel_client;
 	c->hidden = true;
 	swc_window_hide(c->win);
 	/* Most recently hidden sits at the head, so unhide is LIFO. */
 	wl_list_remove(&c->link);
 	wl_list_insert(&wm.clients, &c->link);
 	refocus();
+}
+
+void hide_sel(void *data, uint32_t time, uint32_t value, uint32_t state)
+{
+	(void)data;
+	(void)time;
+	(void)value;
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client)
+		return;
+	hide_client(wm.sel_client);
 }
 
 void unhide_last(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -489,6 +549,36 @@ static bool client_screen(struct client *c, struct swc_screen **out)
 	return false;
 }
 
+static void layout_max(struct client *c)
+{
+	struct swc_screen *scr;
+	struct swc_rectangle geom;
+	struct swc_rectangle cur;
+	uint32_t left, right, top, bottom;
+
+	if (!c || !c->win || !c->max || c->fullscreen)
+		return;
+	if (!client_screen(c, &scr))
+		return;
+	if (!swc_window_get_geometry(c->win, &cur))
+		return;
+
+	theme_insets(&left, &top, &right, &bottom);
+	geom = scr->usable_geometry;
+	if (geom.width <= left + right || geom.height <= top + bottom)
+		return;
+
+	if (c->max & MAX_W) {
+		cur.x = geom.x + (int32_t)left;
+		cur.width = geom.width - left - right;
+	}
+	if (c->max & MAX_H) {
+		cur.y = geom.y + (int32_t)top;
+		cur.height = geom.height - top - bottom;
+	}
+	swc_window_set_geometry(c->win, &cur);
+}
+
 static void set_max(struct client *c, uint8_t mask, bool on)
 {
 	struct swc_screen *scr;
@@ -524,29 +614,14 @@ static void set_max(struct client *c, uint8_t mask, bool on)
 		return;
 	if (!client_screen(c, &scr))
 		return;
-	if (!c->max)
-		remember_geometry(c);
-	if (!swc_window_get_geometry(c->win, &cur))
-		return;
-
-	left = cfg.decor.left;
-	right = cfg.decor.right;
-	top = cfg.decor.top;
-	bottom = cfg.decor.bottom;
+	theme_insets(&left, &top, &right, &bottom);
 	geom = scr->usable_geometry;
 	if (geom.width <= left + right || geom.height <= top + bottom)
 		return;
-
-	if (mask & MAX_W) {
-		cur.x = geom.x + (int32_t)left;
-		cur.width = geom.width - left - right;
-	}
-	if (mask & MAX_H) {
-		cur.y = geom.y + (int32_t)top;
-		cur.height = geom.height - top - bottom;
-	}
+	if (!c->max)
+		remember_geometry(c);
 	c->max |= mask;
-	swc_window_set_geometry(c->win, &cur);
+	layout_max(c);
 }
 
 void toggle_maximise(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -590,6 +665,24 @@ void toggle_sticky(void *data, uint32_t time, uint32_t value, uint32_t state)
 	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !wm.sel_client)
 		return;
 	wm.sel_client->sticky = !wm.sel_client->sticky;
+}
+
+void toggle_theme(void *data, uint32_t time, uint32_t value, uint32_t state)
+{
+	struct client *c;
+
+	(void)data;
+	(void)time;
+	(void)value;
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
+		return;
+
+	theme = theme == THEME_IRIX ? THEME_WMX : THEME_IRIX;
+	wl_list_for_each(c, &wm.clients, link) {
+		apply_decor(c, c == wm.sel_client);
+		if (c->max)
+			layout_max(c);
+	}
 }
 
 void mouse_move(void *data, uint32_t time, uint32_t value, uint32_t state)
@@ -649,22 +742,33 @@ enum {
 	HIT_CLIENT,
 	HIT_FRAME,
 	HIT_CORNER,
+	HIT_TITLE,
+	HIT_MENU,
+	HIT_MIN,
+	HIT_MAX,
+	HIT_EDGE,
 };
 
 struct hit {
 	struct client *c;
 	int where;
+	uint32_t edges;
 };
+
+static bool on_chrome(int where)
+{
+	return where != HIT_NONE && where != HIT_CLIENT;
+}
 
 static struct hit hit_test(int32_t x, int32_t y)
 {
 	struct client *c;
-	struct hit hit = { NULL, HIT_NONE };
+	struct hit hit = { NULL, HIT_NONE, 0 };
 
 	wl_list_for_each(c, &wm.clients, link) {
 		struct swc_rectangle g;
 		uint32_t L, T, R, B;
-		int32_t ox, oy;
+		int32_t ox, oy, rx, ry;
 		uint32_t ow, oh;
 
 		if (!shown(c, NULL) || !c->win)
@@ -684,11 +788,59 @@ static struct hit hit_test(int32_t x, int32_t y)
 		hit.c = c;
 		if (x >= g.x && y >= g.y &&
 		    x < g.x + (int32_t)g.width &&
-		    y < g.y + (int32_t)g.height)
+		    y < g.y + (int32_t)g.height) {
 			hit.where = HIT_CLIENT;
-		else if (R && B &&
-		         x >= ox + (int32_t)ow - WMX_CORNER &&
-		         y >= oy + (int32_t)oh - WMX_CORNER)
+			return hit;
+		}
+
+		rx = x - ox;
+		ry = y - oy;
+		if (theme == THEME_IRIX) {
+			int32_t min_x0 = (int32_t)ow - IRIX_MIN_FROM_R;
+			int32_t min_x1 = (int32_t)ow - IRIX_MIN_TO_R;
+			int32_t max_x0 = (int32_t)ow - IRIX_MAX_FROM_R;
+			int32_t max_x1 = (int32_t)ow - (int32_t)IRIX_EDGE;
+
+			if (ry >= (int32_t)IRIX_EDGE && ry < (int32_t)IRIX_TOP &&
+			    min_x0 >= IRIX_MENU_X1) {
+				if (rx >= IRIX_MENU_X0 && rx < IRIX_MENU_X1) {
+					hit.where = HIT_MENU;
+					return hit;
+				}
+				if (rx >= min_x0 && rx < min_x1) {
+					hit.where = HIT_MIN;
+					return hit;
+				}
+				if (rx >= max_x0 && rx < max_x1) {
+					hit.where = HIT_MAX;
+					return hit;
+				}
+				if (rx >= (int32_t)IRIX_EDGE &&
+				    rx < (int32_t)ow - (int32_t)IRIX_EDGE) {
+					hit.where = HIT_TITLE;
+					return hit;
+				}
+			} else if (ry >= (int32_t)IRIX_EDGE && ry < (int32_t)IRIX_TOP &&
+			           rx >= (int32_t)IRIX_EDGE &&
+			           rx < (int32_t)ow - (int32_t)IRIX_EDGE) {
+				hit.where = HIT_TITLE;
+				return hit;
+			}
+			if (rx < (int32_t)IRIX_EDGE)
+				hit.edges |= SWC_WINDOW_EDGE_LEFT;
+			if (rx >= (int32_t)ow - (int32_t)IRIX_EDGE)
+				hit.edges |= SWC_WINDOW_EDGE_RIGHT;
+			if (ry < (int32_t)IRIX_EDGE)
+				hit.edges |= SWC_WINDOW_EDGE_TOP;
+			if (ry >= (int32_t)oh - (int32_t)IRIX_EDGE)
+				hit.edges |= SWC_WINDOW_EDGE_BOTTOM;
+			hit.where = hit.edges ? HIT_EDGE : HIT_TITLE;
+			return hit;
+		}
+
+		if (R && B &&
+		    x >= ox + (int32_t)ow - WMX_CORNER &&
+		    y >= oy + (int32_t)oh - WMX_CORNER)
 			hit.where = HIT_CORNER;
 		else
 			hit.where = HIT_FRAME;
@@ -751,17 +903,42 @@ void frame_button(void *data, uint32_t time, uint32_t value, uint32_t state)
 	hit = hit_test(x, y);
 
 	if (value == BTN_LEFT &&
-	    (hit.where == HIT_FRAME || hit.where == HIT_CORNER)) {
+	    (hit.where == HIT_FRAME || hit.where == HIT_CORNER ||
+	     hit.where == HIT_TITLE || hit.where == HIT_EDGE)) {
+		uint32_t edges;
+
 		focus(hit.c);
 		wm.grab.active = true;
-		wm.grab.resize = hit.where == HIT_CORNER;
+		wm.grab.resize = hit.where == HIT_CORNER || hit.where == HIT_EDGE;
 		wm.grab.c = hit.c;
-		if (wm.grab.resize)
-			swc_window_begin_resize(hit.c->win,
-			                        SWC_WINDOW_EDGE_RIGHT |
-			                        SWC_WINDOW_EDGE_BOTTOM);
-		else
+		if (!wm.grab.resize) {
 			swc_window_begin_move(hit.c->win);
+			return;
+		}
+		edges = hit.where == HIT_CORNER
+		            ? SWC_WINDOW_EDGE_RIGHT | SWC_WINDOW_EDGE_BOTTOM
+		            : hit.edges;
+		swc_window_begin_resize(hit.c->win, edges);
+		return;
+	}
+
+	if (value == BTN_LEFT && hit.where == HIT_MIN) {
+		focus(hit.c);
+		hide_client(hit.c);
+		return;
+	}
+
+	if (value == BTN_LEFT && hit.where == HIT_MAX) {
+		focus(hit.c);
+		if ((hit.c->max & (MAX_W | MAX_H)) == (MAX_W | MAX_H))
+			set_max(hit.c, MAX_W | MAX_H, false);
+		else
+			set_max(hit.c, MAX_W | MAX_H, true);
+		return;
+	}
+
+	if (value == BTN_LEFT && hit.where == HIT_MENU) {
+		focus(hit.c);
 		return;
 	}
 
@@ -770,8 +947,7 @@ void frame_button(void *data, uint32_t time, uint32_t value, uint32_t state)
 		return;
 	}
 
-	if (value == BTN_MIDDLE &&
-	    (hit.where == HIT_FRAME || hit.where == HIT_CORNER)) {
+	if (value == BTN_MIDDLE && on_chrome(hit.where)) {
 		go_channel(wm.ws >= NCHANNELS ? 1 : (uint32_t)wm.ws + 1);
 		return;
 	}
@@ -802,7 +978,7 @@ static void on_axis(void *data, uint32_t time, uint32_t axis, int32_t value120)
 	}
 
 	hit = hit_test(x, y);
-	if (hit.where != HIT_FRAME && hit.where != HIT_CORNER) {
+	if (!on_chrome(hit.where)) {
 		swc_pointer_send_axis(time, axis, value120);
 		return;
 	}
