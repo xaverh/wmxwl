@@ -23,6 +23,11 @@ the title is whatever Times your fontconfig provides, not the IRIX screen
 font. The desktop stays black: neuswc has no call for a root colour, so the
 IRIX blue (`#4c719e`) is not painted.
 
+![IRIX frame](sample-irix.png)
+
+Sample of that frame. The blue behind it is the classic desktop colour, drawn
+in the picture so the frame can be seen. wmxwl does not paint it.
+
 ## What it does
 
 - Floating windows. Focus follows the pointer and does not raise.
